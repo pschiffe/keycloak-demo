@@ -8,6 +8,7 @@ RUN sed -i 's/listen       80;/listen       8080;/' /etc/nginx/conf.d/default.co
     && rm -f /usr/share/nginx/html/index.html \
     && chown -R nginx: /usr/share/nginx/html \
     && chmod 777 /usr/share/nginx/html \
+    && chmod 777 /var/cache/nginx \
     && chmod 777 /var/run
 
 USER nginx
