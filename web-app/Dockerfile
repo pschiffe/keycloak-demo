@@ -3,6 +3,14 @@ MAINTAINER "Peter Schiffer" <pschiffe@redhat.com>
 
 COPY docker-cmd.sh /docker-cmd.sh
 COPY html /usr/share/nginx/html
+RUN sed -i 's/listen       80;/listen       8080;/' /etc/nginx/conf.d/default.conf \
+    && sed -i '/user  nginx;/d' /etc/nginx/nginx.conf \
+    && chown -R nginx: /usr/share/nginx/html \
+    && chgrp nginx /var/run \
+    && chmod 775 /var/run
+
+USER nginx
+EXPOSE 8080
 
 CMD [ "/docker-cmd.sh" ]
 
