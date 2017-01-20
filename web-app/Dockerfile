@@ -6,8 +6,8 @@ COPY html /usr/share/nginx/html
 RUN sed -i 's/listen       80;/listen       8080;/' /etc/nginx/conf.d/default.conf \
     && sed -i '/user  nginx;/d' /etc/nginx/nginx.conf \
     && chown -R nginx: /usr/share/nginx/html \
-    && chgrp nginx /var/run \
-    && chmod 775 /var/run
+    && chmod 777 /usr/share/nginx/html \
+    && chmod 777 /var/run
 
 USER nginx
 EXPOSE 8080
