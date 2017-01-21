@@ -1,0 +1,184 @@
+- name: keycloak saml brokering
+  hosts: oc_client
+  gather_facts: true
+  vars:
+    oc_project: keycloak-poc
+    tmp_dir: tmp
+  tasks:
+#  - name: Install dependencies
+#    become: true
+#    package: name={{ item }} state=present
+#    with_items:
+#      - java-1.8.0-openjdk-devel
+#      - openssl
+
+  - name: Check to see if project exists
+    command: oc get project {{ oc_project }} -o json
+    ignore_errors: true
+    register: ocp_proj
+
+  - name: Create new project
+    command: oc new-project {{ oc_project }}
+    when: ocp_proj | failed
+    register: create_new_proj
+    until: create_new_proj | success
+    retries: 10
+    delay: 10
+
+  - name: Change to the project
+    command: oc project {{ oc_project }}
+
+  - name: Import jboss image streams
+    command: oc create -f jboss-image-streams.json
+    when: ocp_proj | failed
+
+  - name: Create sso template
+    command: oc create -f sso70-https.json
+    when: ocp_proj | failed
+
+  - name: Check to see if service account exists
+    command: oc get sa sso-service-account -o json
+    ignore_errors: true
+    register: sa
+
+  - name: Create service account
+    command: oc create serviceaccount sso-service-account
+    when: sa | failed
+
+  - name: Add role to user
+    command: oc policy add-role-to-user view system:serviceaccount:{{ oc_project | replace('-', '.') }}:sso-service-account
+    when: sa | failed
+
+  - name: Create tmp directory
+    file: name={{ tmp_dir }} state=directory
+
+  - name: Check for key
+    stat: path={{ tmp_dir }}/xpaas.key
+    register: key
+
+  - name: Check for xpaas crt
+    stat: path={{ tmp_dir }}/xpaas.crt
+    register: crt
+
+  - name: Check for csr
+    stat: path={{ tmp_dir }}/sso.csr
+    register: csr
+
+  - name: Check for sso crt
+    stat: path={{ tmp_dir }}/sso.crt
+    register: sso
+
+  - name: Set a sample password
+    set_fact: idmpassword="{{ lookup('password', tmp_dir + '/idmpassword chars=ascii_letters,digits') }}"
+
+  - name: Stage 1 - REQ
+    command: openssl req -new -passout pass:{{ idmpassword }} -newkey rsa:4096 -x509 -keyout {{ tmp_dir }}/xpaas.key -out {{ tmp_dir }}/xpaas.crt -days 3650 -subj "/CN=xpaas-sso.ca"
+    when: key.stat.exists == False or crt.stat.exists == False
+
+  - name: Check for jks
+    stat: path={{ tmp_dir }}/sso-https.jks
+    register: jks
+
+  - name: Stage 2 - GENKEYPAIR
+    command: keytool -genkeypair -deststorepass {{ idmpassword }} -storepass {{ idmpassword }} -keypass {{ idmpassword }} -keyalg RSA -keysize 2048 -dname "CN=secureidm.{{ public_hosted_zone }}" -alias sso-https-key -keystore {{ tmp_dir }}/sso-https.jks
+    when: jks.stat.exists == False
+
+  - name: Stage 3 - CERTREQ
+    command: keytool -deststorepass {{ idmpassword }} -storepass {{ idmpassword }} -keypass {{ idmpassword }} -certreq -keyalg rsa -alias sso-https-key -keystore {{ tmp_dir }}/sso-https.jks -file {{ tmp_dir }}/sso.csr
+    when: csr.stat.exists == False
+
+  - name: Stage 4 - X509
+    command: openssl x509 -req -passin pass:{{ idmpassword }} -CA {{ tmp_dir }}/xpaas.crt -CAkey {{ tmp_dir }}/xpaas.key -in {{ tmp_dir }}/sso.csr -out {{ tmp_dir }}/sso.crt -days 3650 -CAcreateserial
+    when: sso.stat.exists == False
+
+  - name: Check to see if crt already exists
+    shell: keytool -storepass {{ idmpassword }} -list -keystore {{ tmp_dir }}/sso-https.jks | grep xpaas
+    ignore_errors: true
+    register: output
+
+  - name: Stage 5 - IMPORT CRT
+    command: keytool -noprompt -deststorepass {{ idmpassword }} -import -file {{ tmp_dir }}/xpaas.crt  -storepass {{ idmpassword }} -keypass {{ idmpassword }} -alias xpaas.ca -keystore {{ tmp_dir }}/sso-https.jks
+    when: output | failed
+
+  - name: Check to see if crt already exists
+    shell: keytool -storepass {{ idmpassword }} -list -keystore {{ tmp_dir }}/sso-https.jks | grep sso-https
+    ignore_errors: true
+    register: https
+
+  - name: Stage 6 - IMPORT SSO
+    command: keytool -noprompt -deststorepass {{ idmpassword }} -storepass {{ idmpassword }} -keypass {{ idmpassword }} -import -file {{ tmp_dir }}/sso.crt -alias sso-https-key -keystore {{ tmp_dir }}/sso-https.jks
+    when: https | failed
+
+  - name: Check to see if crt already exists
+    shell: keytool -storepass {{ idmpassword }} -list -keystore {{ tmp_dir }}/truststore.jks | grep xpaas
+    ignore_errors: true
+    register: xpaas2
+
+  - name: Stage 7 - IMPORT XPAAS
+    command: keytool -noprompt -deststorepass {{ idmpassword }} -storepass {{ idmpassword }} -keypass {{ idmpassword }} -import -file {{ tmp_dir }}/xpaas.crt -alias xpaas.ca -keystore {{ tmp_dir }}/truststore.jks
+    when: xpaas2 | failed
+
+  - name: Check for jgroups.jceks
+    stat: path={{ tmp_dir }}/jgroups.jceks
+    register: jgroups
+
+  - name: Stage 8 - GENSECKEY
+    command: keytool -deststorepass {{ idmpassword }} -storepass {{ idmpassword }} -keypass {{ idmpassword }} -genseckey -alias jgroups -storetype JCEKS -keystore {{ tmp_dir }}/jgroups.jceks
+    when: jgroups.stat.exists == False
+
+  - name: Check for secret
+    command: oc get secret sso-app-secret -o json
+    ignore_errors: true
+    register: secret
+
+  - name: Stage 9 - OCCREATE SECRET
+    command: oc create secret generic sso-app-secret --from-file={{ tmp_dir }}/jgroups.jceks --from-file={{ tmp_dir }}/sso-https.jks --from-file={{ tmp_dir }}/truststore.jks
+    when: secret | failed
+
+  - name: Stage 10 - OCCREATE SECRET ADD
+    command: oc secret add sa/sso-service-account secret/sso-app-secret
+    when: secret | failed
+
+  - name: Check to see if app is deployed
+    command: oc get dc sso
+    ignore_errors: true
+    register: exists
+
+  - name: Create saml realm file from template
+    template: src=saml-broker-realms.json.j2 dest={{ tmp_dir }}/saml-broker-realms.json
+
+  - name: Create config map with realm to import
+    command: oc create configmap sso-realm --from-file={{ tmp_dir }}/saml-broker-realms.json
+    when: exists | failed
+
+  - name: Stage 11 - Create App
+    command: oc new-app sso70-https -p APPLICATION_NAME=sso,HTTPS_KEYSTORE=sso-https.jks,HTTPS_PASSWORD={{ idmpassword }},HTTPS_SECRET=sso-app-secret,JGROUPS_ENCRYPT_KEYSTORE=jgroups.jceks,JGROUPS_ENCRYPT_PASSWORD={{ idmpassword }},JGROUPS_ENCRYPT_SECRET=sso-app-secret,SERVICE_ACCOUNT_NAME=sso-service-account,SSO_TRUSTSTORE=truststore.jks,SSO_TRUSTSTORE_PASSWORD={{ idmpassword }},IMAGE_STREAM_NAMESPACE={{ oc_project }},SSO_IMPORT_FILE=/etc/sso-realm-volume/saml-broker-realms.json -l app=sso70-https -l application=sso -l template=sso70-https
+    when: exists | failed
+
+  - name: Wait for new app
+    pause: seconds=5
+    when: exists | failed
+
+  - name: Stage 11 - Deploy App
+    command: oc deploy sso --latest
+    when: exists | failed
+
+  - name: Check to see if sample web app is deployed
+    command: oc get dc web-app
+    ignore_errors: true
+    register: webapp_exists
+
+  - name: Deploy sample web app
+    command: oc new-app pschiffe/keycloak-demo-web-app KEYCLOAK_SERVER=http://sso-{{ oc_project }}.{{public_hosted_zone }} --name web-app
+    when: webapp_exists | failed
+
+  - name: Create a route for web app
+    command: oc expose service web-app --port 8080
+    when: webapp_exists | failed
+
+  - name: Wait for the apps to be deployed
+    shell: "[ $(oc get dc sso -o jsonpath='{.status.availableReplicas}') -gt 0 ]"
+    register: avail_replicas
+    until: avail_replicas | success
+    retries: 20
+    delay: 30
