@@ -16,3 +16,7 @@ ansible-playbook -e 'public_hosted_zone=192.168.1.7.xip.io' ./saml-broker/saml-b
 ```
 
 Once the Keycloak is deployed, there will be 2 realms, `saml-broker-realm` containing the user (with login `user/password`) and providing a SAML v2 Identity Provider and the `saml-broker-authentication-realm` which contains local admin user (with login `admin/password`) and is used for SAML brokering.
+
+## Issues to fix
+
+Currently it's not possible to do this without modifying the `sso70-https.json` template provided by OpenShift https://github.com/jboss-openshift/application-templates/issues/220
