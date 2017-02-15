@@ -20,3 +20,5 @@ Once the Keycloak is deployed, there will be 2 realms, `saml-broker-realm` conta
 ## Issues to fix
 
 Currently it's not possible to do this without modifying the `sso70-https.json` template provided by OpenShift https://github.com/jboss-openshift/application-templates/issues/220
+
+RFE to not import users to the keycloak local database when brokering can be found here https://issues.jboss.org/browse/KEYCLOAK-4429
